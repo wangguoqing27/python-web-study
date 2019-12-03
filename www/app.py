@@ -1,91 +1,135 @@
-#!/usr/bin/env python
-# -*- coding:utf-8 -*-
-# @Title    : ''
-# @Time     : 2019/11/25 14:46
-# @Author   : wangguoqing27
-# @Describe :
-# @File     : .py
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+__author__ = 'Michael Liao'
+
+'''
+async web application.
+'''
+
 import logging; logging.basicConfig(level=logging.INFO)
 
-import asyncio, os, json, time,aiomysql
+import asyncio, os, json, time
 from datetime import datetime
 
 from aiohttp import web
+from jinja2 import Environment, FileSystemLoader
 
-def index(request):
-    return web.Response(body=b'<hl>Awesome</hl>',content_type='text/html')
+from config import configs
+
+import orm
+from coroweb import add_routes, add_static
+
+def init_jinja2(app, **kw):
+    logging.info('init jinja2...')
+    options = dict(
+        autoescape = kw.get('autoescape', True),
+        block_start_string = kw.get('block_start_string', '{%'),
+        block_end_string = kw.get('block_end_string', '%}'),
+        variable_start_string = kw.get('variable_start_string', '{{'),
+        variable_end_string = kw.get('variable_end_string', '}}'),
+        auto_reload = kw.get('auto_reload', True)
+    )
+    path = kw.get('path', None)
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
+    logging.info('set jinja2 template path: %s' % path)
+    env = Environment(loader=FileSystemLoader(path), **options)
+    filters = kw.get('filters', None)
+    if filters is not None:
+        for name, f in filters.items():
+            env.filters[name] = f
+    app['__templating__'] = env
+
+@asyncio.coroutine
+def logger_factory(app, handler):
+    @asyncio.coroutine
+    def logger(request):
+        logging.info('Request: %s %s' % (request.method, request.path))
+        # yield from asyncio.sleep(0.3)
+        return (yield from handler(request))
+    return logger
+
+@asyncio.coroutine
+def data_factory(app, handler):
+    @asyncio.coroutine
+    def parse_data(request):
+        if request.method == 'POST':
+            if request.content_type.startswith('application/json'):
+                request.__data__ = yield from request.json()
+                logging.info('request json: %s' % str(request.__data__))
+            elif request.content_type.startswith('application/x-www-form-urlencoded'):
+                request.__data__ = yield from request.post()
+                logging.info('request form: %s' % str(request.__data__))
+        return (yield from handler(request))
+    return parse_data
+
+@asyncio.coroutine
+def response_factory(app, handler):
+    @asyncio.coroutine
+    def response(request):
+        logging.info('Response handler...')
+        r = yield from handler(request)
+        if isinstance(r, web.StreamResponse):
+            return r
+        if isinstance(r, bytes):
+            resp = web.Response(body=r)
+            resp.content_type = 'application/octet-stream'
+            return resp
+        if isinstance(r, str):
+            if r.startswith('redirect:'):
+                return web.HTTPFound(r[9:])
+            resp = web.Response(body=r.encode('utf-8'))
+            resp.content_type = 'text/html;charset=utf-8'
+            return resp
+        if isinstance(r, dict):
+            template = r.get('__template__')
+            if template is None:
+                resp = web.Response(body=json.dumps(r, ensure_ascii=False, default=lambda o: o.__dict__).encode('utf-8'))
+                resp.content_type = 'application/json;charset=utf-8'
+                return resp
+            else:
+                resp = web.Response(body=app['__templating__'].get_template(template).render(**r).encode('utf-8'))
+                resp.content_type = 'text/html;charset=utf-8'
+                return resp
+        if isinstance(r, int) and t >= 100 and t < 600:
+            return web.Response(t)
+        if isinstance(r, tuple) and len(r) == 2:
+            t, m = r
+            if isinstance(t, int) and t >= 100 and t < 600:
+                return web.Response(t, str(m))
+        # default:
+        resp = web.Response(body=str(r).encode('utf-8'))
+        resp.content_type = 'text/plain;charset=utf-8'
+        return resp
+    return response
+
+def datetime_filter(t):
+    delta = int(time.time() - t)
+    if delta < 60:
+        return u'1分钟前'
+    if delta < 3600:
+        return u'%s分钟前' % (delta // 60)
+    if delta < 86400:
+        return u'%s小时前' % (delta // 3600)
+    if delta < 604800:
+        return u'%s天前' % (delta // 86400)
+    dt = datetime.fromtimestamp(t)
+    return u'%s年%s月%s日' % (dt.year, dt.month, dt.day)
 
 @asyncio.coroutine
 def init(loop):
-    app = web.Application(loop=loop)
-    app.router.add_route('GET','/',index)
+    yield from orm.create_pool(loop=loop, **configs.db)
+    app = web.Application(loop=loop, middlewares=[
+        logger_factory, response_factory
+    ])
+    init_jinja2(app, filters=dict(datetime=datetime_filter))
+    add_routes(app, 'handlers')
+    add_static(app)
     srv = yield from loop.create_server(app.make_handler(), '127.0.0.1', 9000)
     logging.info('server started at http://127.0.0.1:9000...')
     return srv
 
-# loop = asyncio.get_event_loop()
-# loop.run_until_complete(init(loop))
-# loop.run_forever()
-
-@asyncio.coroutine
-def create_pool(pool, **kw):
-    '''
-    连接数据源
-    :param pool:
-    :param kw:
-    :return:
-    '''
-    logging.info('create database create database connection pool ...')
-    global __pool
-    __pool = yield from aiomysql.create_pool(
-        host=kw.get('host', 'localhost'),
-        port=kw.get('port', 3306),
-        user=kw['awesome'],
-        password=kw['123456'],
-        db=kw['awesome'],
-        charset=kw.get('charset','utf8'),
-        autocommint=kw.get('autocommit',True),
-        maxsize=kw.get('maxsize',10),
-        minsize=kw.get('minsize',1),
-        loop=loop
-    )
-
-@asyncio.coroutine
-def select(sql,args,size=None):
-    '''
-    SQL语句的占位符是?，而MySQL的占位符是%s，select()函数在内部自动替换。注意要始终坚持使用带参数的SQL，
-    而不是自己拼接SQL字符串，这样可以防止SQL注入攻击。
-    注意到yield from将调用一个子协程（也就是在一个协程中调用另一个协程）并直接获得子协程的返回结果。
-    如果传入size参数，就通过fetchmany()获取最多指定数量的记录，否则，通过fetchall()获取所有记录。
-    :param sql:
-    :param args: 传参
-    :param size: 获取多少条数据
-    :return:
-    '''
-    logging.log(sql, args)
-    global __pool
-    with (yield from __pool) as conn:
-        cur = yield from conn.cursor(aiomysql.DictCursor)
-        yield from cur.execute(sql.replace('?', '%s'), args or ())
-        if size:
-            rs = yield from cur.fetchmany(size)
-        else:
-            rs = yield from cur.fetchall()
-        yield from cur.close()
-        logging.info('rows returned: %s' % len(rs))
-        return rs
-
-@asyncio.coroutine
-def execute(sql,args):
-    logging.log(sql)
-    with (yield from __pool) as conn:
-        try:
-            cur = yield from conn.cursor()
-            yield from cur.execute(sql.replace('?' ,'%s'),args)
-            affected = cur.rowcount
-            yield from cur.close()
-        except BaseException as e:
-            raise
-        return affected
-
-
+loop = asyncio.get_event_loop()
+loop.run_until_complete(init(loop))
+loop.run_forever()
