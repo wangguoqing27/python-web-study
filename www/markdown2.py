@@ -94,10 +94,7 @@ import sys
 from pprint import pprint, pformat
 import re
 import logging
-try:
-    from hashlib import md5
-except ImportError:
-    from md5 import md5
+from hashlib import md5
 import optparse
 from random import random, randint
 import codecs

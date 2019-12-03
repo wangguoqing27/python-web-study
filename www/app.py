@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+from www import orm
 
 __author__ = 'Michael Liao'
 
@@ -15,10 +16,10 @@ from datetime import datetime
 from aiohttp import web
 from jinja2 import Environment, FileSystemLoader
 
-from config import configs
+from www.config import configs
 
-import orm
-from coroweb import add_routes, add_static
+import www.orm
+from www.coroweb import add_routes, add_static
 
 def init_jinja2(app, **kw):
     logging.info('init jinja2...')

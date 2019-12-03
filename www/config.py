@@ -7,7 +7,7 @@ Configuration
 
 __author__ = 'Michael Liao'
 
-import config_default
+import www.config_default
 
 class Dict(dict):
     '''
@@ -45,7 +45,7 @@ def toDict(d):
         D[k] = toDict(v) if isinstance(v, dict) else v
     return D
 
-configs = config_default.configs
+configs = www.config_default.configs
 
 try:
     import config_override
